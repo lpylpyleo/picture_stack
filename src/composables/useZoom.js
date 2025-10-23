@@ -134,6 +134,12 @@ export const useZoom = (containerSize, images) => {
     fitToView()
   }
 
+  const setZoom = (newZoomLevel) => {
+    // 限制缩放范围
+    const clampedZoom = Math.max(0.1, Math.min(newZoomLevel, 3))
+    zoomAroundCenter(clampedZoom)
+  }
+
   return {
     stagePos,
     baseScale,
@@ -143,6 +149,7 @@ export const useZoom = (containerSize, images) => {
     handleWheel,
     zoomIn,
     zoomOut,
-    resetZoom
+    resetZoom,
+    setZoom
   }
 }

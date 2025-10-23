@@ -20,9 +20,24 @@ const showMobileLayers = ref(false)
 const canvasRef = ref(null)
 
 // 使用组合式函数
-const { stagePos, baseScale, zoomLevel, fitToView, handleWheel, zoomIn, zoomOut, resetZoom } = useZoom(containerSize, images)
+const {
+  stagePos,
+  baseScale,
+  zoomLevel,
+  fitToView,
+  handleWheel,
+  zoomIn,
+  zoomOut,
+  resetZoom,
+  setZoom,
+} = useZoom(containerSize, images)
 const { handleUpload } = useImageUpload(images, fitToView)
-const { exportFormat, exportQuality, handleExport: doExport, handlePreview: doPreview } = useExport()
+const {
+  exportFormat,
+  exportQuality,
+  handleExport: doExport,
+  handlePreview: doPreview,
+} = useExport()
 
 // 处理图片变换
 const onTransformEnd = (e) => {
@@ -93,17 +108,31 @@ const toggleMobileLayers = () => {
 <template>
   <main class="editor-container">
     <!-- 移动端浮动按钮 -->
-    <MobileLayerToggle
-      :image-count="images.length"
-      @toggle="toggleMobileLayers"
-    />
+    <Transition name="bounce">
+      <MobileLayerToggle
+        v-show="!showMobileLayers"
+        :image-count="images.length"
+        @toggle="toggleMobileLayers"
+      />
+    </Transition>
 
     <div class="sidebar" :class="{ 'mobile-show': showMobileLayers }">
       <h2>图片叠加编辑器</h2>
 
       <div class="toolbar">
-        <div class="control-group upload-group">
-          <UploadButton @upload="handleUpload" />
+        <!-- 移动端按钮行容器 -->
+        <div class="mobile-buttons-row">
+          <div class="control-group upload-group">
+            <UploadButton @upload="handleUpload" />
+          </div>
+
+          <ExportControls
+            v-model:export-format="exportFormat"
+            v-model:export-quality="exportQuality"
+            :has-images="images.length > 0"
+            @export="handleExport"
+            @preview="handlePreview"
+          />
         </div>
 
         <ZoomControls
@@ -111,14 +140,7 @@ const toggleMobileLayers = () => {
           @zoom-in="zoomIn"
           @zoom-out="zoomOut"
           @reset-zoom="resetZoom"
-        />
-
-        <ExportControls
-          v-model:export-format="exportFormat"
-          v-model:export-quality="exportQuality"
-          :has-images="images.length > 0"
-          @export="handleExport"
-          @preview="handlePreview"
+          @set-zoom="setZoom"
         />
       </div>
 
@@ -132,11 +154,7 @@ const toggleMobileLayers = () => {
     </div>
 
     <!-- 移动端遮罩层 -->
-    <div
-      class="mobile-overlay"
-      v-if="showMobileLayers"
-      @click="toggleMobileLayers"
-    ></div>
+    <div class="mobile-overlay" v-if="showMobileLayers" @click="toggleMobileLayers"></div>
 
     <ImageCanvas
       ref="canvasRef"
@@ -191,6 +209,11 @@ const toggleMobileLayers = () => {
   margin-bottom: 0;
 }
 
+/* 桌面端隐藏移动端按钮行 */
+.mobile-buttons-row {
+  display: contents;
+}
+
 .mobile-overlay {
   display: none;
   position: fixed;
@@ -240,22 +263,90 @@ const toggleMobileLayers = () => {
 
   /* 移动端工具栏布局优化 */
   .toolbar {
-    display: grid;
-    grid-template-columns: 1fr 2fr;
-    grid-template-rows: auto auto;
+    display: flex;
+    flex-direction: column;
     gap: 8px;
     margin-bottom: 8px;
   }
 
-  .upload-group {
-    grid-column: 1;
-    grid-row: 1;
+  /* 移动端按钮行样式 */
+  .mobile-buttons-row {
+    display: flex;
+    gap: 6px;
+    width: 100%;
   }
 
-  .control-group,
-  .actions {
+  /* 上传按钮容器 */
+  .mobile-buttons-row .upload-group {
     flex: 1;
     margin: 0;
+  }
+
+  /* 导出控件容器 - 占2/3宽度 */
+  .mobile-buttons-row > :last-child {
+    flex: 2;
+  }
+
+  /* 隐藏导出配置部分 */
+  .toolbar :deep(.export-config) {
+    display: none !important;
+  }
+
+  /* 导出按钮组样式 */
+  .toolbar :deep(.export-group) {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 0;
+  }
+
+  /* 所有按钮样式统一 */
+  .toolbar :deep(.btn) {
+    padding: 8px;
+    min-width: auto;
+  }
+
+  .toolbar :deep(.btn .text) {
+    display: none;
+  }
+
+  .toolbar :deep(.btn .icon) {
+    display: inline;
+    margin: 0;
+    font-size: 16px;
+  }
+}
+
+/* 弹性动画效果 */
+.bounce-enter-active {
+  animation: bounce-in 0.5s cubic-bezier(0.68, -0.55, 0.265, 1.55);
+}
+
+.bounce-leave-active {
+  animation: bounce-out 0.3s ease-in-out;
+}
+
+@keyframes bounce-in {
+  0% {
+    transform: scale(0);
+    opacity: 0;
+  }
+  50% {
+    transform: scale(1.2);
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes bounce-out {
+  0% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(0.8);
+    opacity: 0;
   }
 }
 </style>
