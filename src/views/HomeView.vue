@@ -129,7 +129,23 @@ const handleUpload = (e) => {
               }
             })
           } else if (isFirstUpload && newImages.length > 1) {
-            // 如果是第一次上传多张图片，计算这批图片的平均尺寸
+            // 如果是第一次上传多张图片，找出最大的图片
+            let maxSize = 0
+            let maxSizeIndex = 0
+
+            newImages.forEach((img, index) => {
+              const size = img.width * img.height
+              if (size > maxSize) {
+                maxSize = size
+                maxSizeIndex = index
+              }
+            })
+
+            // 将最大的图片移到数组开头（底层）
+            const largestImage = newImages.splice(maxSizeIndex, 1)[0]
+            newImages.unshift(largestImage)
+
+            // 计算这批图片的平均尺寸
             const avgSize = newImages.reduce((acc, img) => {
               return acc + (img.width + img.height) / 2
             }, 0) / newImages.length
@@ -319,62 +335,40 @@ const handleExport = async () => {
 
   const stage = stageRef.value.getStage()
   // 暂存当前状态
-  const currentSelected = selectedId.value
+  const currentState = {
+    selectedId: selectedId.value,
+    zoomLevel: zoomLevel.value,
+    baseScale: baseScale.value,
+    stagePos: { ...stagePos.value }
+  }
 
-  // 取消选中（隐藏 Transformer），重置缩放和位置为原始状态以便精确导出
-  selectedId.value = null
-  zoomLevel.value = 1
-  baseScale.value = 1
-  stagePos.value = { x: 0, y: 0 }
+  // 重置视图状态以便精确导出
+  const resetViewForExport = () => {
+    selectedId.value = null
+    zoomLevel.value = 1
+    baseScale.value = 1
+    stagePos.value = { x: 0, y: 0 }
+  }
 
-  // 等待 DOM 和 Konva 更新到原始状态
+  // 恢复视图状态
+  const restoreViewState = (state) => {
+    selectedId.value = state.selectedId
+    zoomLevel.value = state.zoomLevel
+    baseScale.value = state.baseScale
+    stagePos.value = state.stagePos
+  }
+
+  resetViewForExport()
   await nextTick()
 
   try {
-    const baseImg = images.value[0]
+    // 计算导出边界
+    const bounds = calculateImageBounds(images.value[0])
 
-    // 计算底图的实际边界框（考虑旋转）
-    const rad = (baseImg.rotation * Math.PI) / 180
-    const cos = Math.cos(rad)
-    const sin = Math.sin(rad)
+    // 导出图片
+    const dataURL = await exportStageAsImage(stage, bounds)
 
-    // 底图四个角的坐标（相对于底图中心）
-    const halfWidth = (baseImg.width * baseImg.scaleX) / 2
-    const halfHeight = (baseImg.height * baseImg.scaleY) / 2
-
-    const corners = [
-      { x: -halfWidth, y: -halfHeight },
-      { x: halfWidth, y: -halfHeight },
-      { x: halfWidth, y: halfHeight },
-      { x: -halfWidth, y: halfHeight }
-    ]
-
-    // 旋转后的角坐标
-    const rotatedCorners = corners.map(corner => ({
-      x: corner.x * cos - corner.y * sin,
-      y: corner.x * sin + corner.y * cos
-    }))
-
-    // 计算边界框
-    const minX = Math.min(...rotatedCorners.map(c => c.x)) + baseImg.x + halfWidth
-    const maxX = Math.max(...rotatedCorners.map(c => c.x)) + baseImg.x + halfWidth
-    const minY = Math.min(...rotatedCorners.map(c => c.y)) + baseImg.y + halfHeight
-    const maxY = Math.max(...rotatedCorners.map(c => c.y)) + baseImg.y + halfHeight
-
-    const exportWidth = maxX - minX
-    const exportHeight = maxY - minY
-
-    // 导出指定区域
-    const dataURL = stage.toDataURL({
-      pixelRatio: 1,
-      x: minX,
-      y: minY,
-      width: exportWidth,
-      height: exportHeight,
-      mimeType: exportFormat.value,
-      quality: exportQuality.value,
-    })
-
+    // 下载文件
     const ext = exportFormat.value === 'image/jpeg' ? 'jpg' : 'png'
     const link = document.createElement('a')
     link.download = `stacked-${Date.now()}.${ext}`
@@ -387,9 +381,7 @@ const handleExport = async () => {
     alert('导出失败，请重试')
   } finally {
     // 恢复之前的视图状态
-    selectedId.value = currentSelected
-
-    // 重新计算视图以适应所有图片
+    restoreViewState(currentState)
     fitToView()
   }
 }
@@ -457,6 +449,181 @@ const generateThumbnail = (img, size) => {
 const toggleMobileLayers = () => {
   showMobileLayers.value = !showMobileLayers.value
 }
+
+// 计算底图的边界框（考虑旋转）
+const calculateImageBounds = (img) => {
+  const rad = (img.rotation * Math.PI) / 180
+  const cos = Math.cos(rad)
+  const sin = Math.sin(rad)
+
+  // 底图四个角的坐标（相对于底图中心）
+  const halfWidth = (img.width * img.scaleX) / 2
+  const halfHeight = (img.height * img.scaleY) / 2
+
+  const corners = [
+    { x: -halfWidth, y: -halfHeight },
+    { x: halfWidth, y: -halfHeight },
+    { x: halfWidth, y: halfHeight },
+    { x: -halfWidth, y: halfHeight }
+  ]
+
+  // 旋转后的角坐标
+  const rotatedCorners = corners.map(corner => ({
+    x: corner.x * cos - corner.y * sin,
+    y: corner.x * sin + corner.y * cos
+  }))
+
+  // 计算边界框
+  const minX = Math.min(...rotatedCorners.map(c => c.x)) + img.x + halfWidth
+  const maxX = Math.max(...rotatedCorners.map(c => c.x)) + img.x + halfWidth
+  const minY = Math.min(...rotatedCorners.map(c => c.y)) + img.y + halfHeight
+  const maxY = Math.max(...rotatedCorners.map(c => c.y)) + img.y + halfHeight
+
+  return {
+    x: minX,
+    y: minY,
+    width: maxX - minX,
+    height: maxY - minY
+  }
+}
+
+// 生成预览页面的HTML内容
+const generatePreviewHTML = (dataURL, fileName) => {
+  return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+      <title>${fileName}</title>
+      <style>
+        body {
+          margin: 0;
+          padding: 0;
+          background: #f0f0f0;
+          display: flex;
+          justify-content: center;
+          align-items: center;
+          min-height: 100vh;
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+        .container {
+          text-align: center;
+          padding: 20px;
+        }
+        img {
+          max-width: 100%;
+          max-height: 90vh;
+          display: block;
+          margin: 0 auto;
+          box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+          border-radius: 8px;
+        }
+        .tip {
+          margin-top: 20px;
+          color: #666;
+          font-size: 14px;
+          line-height: 1.5;
+        }
+        .tip-mobile {
+          display: none;
+        }
+        @media (max-width: 768px) {
+          .tip-mobile {
+            display: block;
+          }
+          .tip-desktop {
+            display: none;
+          }
+        }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <img src="${dataURL}" alt="${fileName}">
+        <div class="tip">
+          <p class="tip-mobile">长按图片可保存到相册</p>
+          <p class="tip-desktop">右键点击图片可保存</p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `
+}
+
+// 导出舞台为图片数据
+const exportStageAsImage = async (stage, bounds) => {
+  return stage.toDataURL({
+    pixelRatio: 1,
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+    mimeType: exportFormat.value,
+    quality: exportQuality.value,
+  })
+}
+
+// 在新页面预览
+const handlePreview = async () => {
+  if (!stageRef.value || images.value.length === 0) return
+
+  const stage = stageRef.value.getStage()
+  // 暂存当前状态
+  const currentState = {
+    selectedId: selectedId.value,
+    zoomLevel: zoomLevel.value,
+    baseScale: baseScale.value,
+    stagePos: { ...stagePos.value }
+  }
+
+  // 重置视图状态以便精确导出
+  const resetViewForExport = () => {
+    selectedId.value = null
+    zoomLevel.value = 1
+    baseScale.value = 1
+    stagePos.value = { x: 0, y: 0 }
+  }
+
+  // 恢复视图状态
+  const restoreViewState = (state) => {
+    selectedId.value = state.selectedId
+    zoomLevel.value = state.zoomLevel
+    baseScale.value = state.baseScale
+    stagePos.value = state.stagePos
+  }
+
+  resetViewForExport()
+  await nextTick()
+
+  try {
+    // 计算导出边界
+    const bounds = calculateImageBounds(images.value[0])
+
+    // 导出图片
+    const dataURL = await exportStageAsImage(stage, bounds)
+
+    // 创建预览窗口
+    const newWindow = window.open('', '_blank')
+    if (newWindow) {
+      const ext = exportFormat.value === 'image/jpeg' ? 'jpg' : 'png'
+      const fileName = `stacked-${Date.now()}.${ext}`
+
+      // 写入HTML内容
+      const htmlContent = generatePreviewHTML(dataURL, fileName)
+      newWindow.document.open()
+      newWindow.document.write(htmlContent)
+      newWindow.document.close()
+    }
+  } catch (e) {
+    console.error('Preview failed:', e)
+    alert('预览失败，请重试')
+  } finally {
+    // 恢复之前的视图状态
+    restoreViewState(currentState)
+    fitToView()
+  }
+}
 </script>
 
 <template>
@@ -513,13 +680,22 @@ const toggleMobileLayers = () => {
 
         <div class="actions export-group">
           <button
-            class="btn btn-success full-width"
+            class="btn btn-success"
             @click="handleExport"
             :disabled="images.length === 0"
             title="导出合成图片"
           >
             <span class="icon">💾</span>
             <span class="text">导出</span>
+          </button>
+          <button
+            class="btn btn-info"
+            @click="handlePreview"
+            :disabled="images.length === 0"
+            title="在新页面查看"
+          >
+            <span class="icon">👁️</span>
+            <span class="text">查看</span>
           </button>
         </div>
       </div>
@@ -883,6 +1059,10 @@ const toggleMobileLayers = () => {
   background-color: #28a745;
   color: white;
 }
+.btn-info {
+  background-color: #17a2b8;
+  color: white;
+}
 .btn-danger {
   background-color: #dc3545 !important;
   color: white !important;
@@ -1058,6 +1238,12 @@ const toggleMobileLayers = () => {
   .export-group {
     grid-column: 1 / -1;
     grid-row: 3;
+    display: flex;
+    gap: 8px;
+  }
+
+  .export-group .btn {
+    flex: 1;
   }
 
   .control-group,
