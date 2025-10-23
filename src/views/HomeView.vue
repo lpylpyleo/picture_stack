@@ -1,12 +1,11 @@
 <script setup>
-import { ref, watch, nextTick, computed } from 'vue'
+import { ref, watch, nextTick, computed, onMounted, onUnmounted } from 'vue'
 
 const canvasAreaRef = ref(null)
-const stageSize = ref({
-  width: 800,
-  height: 600,
-})
-const zoomLevel = ref(1)
+const containerSize = ref({ width: 0, height: 0 }) // 容器尺寸
+const stagePos = ref({ x: 0, y: 0 }) // 舞台位置（平移）
+const baseScale = ref(1) // 100% 时对应的实际缩放比例
+const zoomLevel = ref(1) // 用户视角的缩放等级 (1.0 = 100%)
 
 // 导出选项
 const exportFormat = ref('image/jpeg')
@@ -36,15 +35,37 @@ watch(selectedId, (newId) => {
   }
 })
 
-// 监听图片数组变化，确保底层图片决定画布大小
+// 监听容器尺寸变化，调整舞台大小
+let resizeObserver = null
+onMounted(() => {
+  if (canvasAreaRef.value) {
+    resizeObserver = new ResizeObserver((entries) => {
+      for (let entry of entries) {
+        const { width, height } = entry.contentRect
+        containerSize.value = { width, height }
+      }
+    })
+    resizeObserver.observe(canvasAreaRef.value)
+  }
+})
+
+onUnmounted(() => {
+  if (resizeObserver) {
+    resizeObserver.disconnect()
+  }
+})
+
+// 监听图片添加，自动调整视图
 watch(
-  () => images.value[0],
-  (newBase) => {
-    if (newBase) {
-      updateStageSizeToBaseImage()
+  () => images.value.length,
+  (newLen, oldLen) => {
+    if (newLen > oldLen && newLen > 0) {
+      nextTick(() => {
+        // 如果是第一张图片，或者新添加的图片较小，重新计算缩放
+        fitToView()
+      })
     }
-  },
-  { deep: true },
+  }
 )
 
 // 处理文件上传
@@ -52,9 +73,18 @@ const handleUpload = (e) => {
   const files = Array.from(e.target.files)
   if (files.length === 0) return
 
-  files.forEach((file) => {
-    if (!file.type.startsWith('image/')) return
+  // 过滤出图片文件
+  const imageFiles = files.filter(file => file.type.startsWith('image/'))
+  if (imageFiles.length === 0) return
 
+  // 记录是否是第一次上传
+  const isFirstUpload = images.value.length === 0
+
+  // 用于存储所有新加载的图片
+  const newImages = []
+  let loadedCount = 0
+
+  imageFiles.forEach((file) => {
     const reader = new FileReader()
     reader.onload = (event) => {
       const img = new Image()
@@ -63,7 +93,7 @@ const handleUpload = (e) => {
         // 生成缩略图
         const thumbnail = generateThumbnail(img, 60) // 60px 的正方形缩略图
 
-        images.value.push({
+        const newImage = {
           id: 'img_' + Date.now() + Math.random().toString(36).substr(2, 9),
           image: img,
           thumbnail: thumbnail,
@@ -74,81 +104,118 @@ const handleUpload = (e) => {
           rotation: 0,
           scaleX: 1,
           scaleY: 1,
-        })
-        // 如果是第一张，更新舞台
-        if (images.value.length === 1) {
-          updateStageSizeToBaseImage()
         }
-        // 每次上传图片后都重新计算缩放，确保最大的图片能完全显示
-        nextTick(() => {
-          fitToScreen()
-        })
+
+        newImages.push(newImage)
+        loadedCount++
+
+        // 当所有图片都加载完成后，统一处理
+        if (loadedCount === imageFiles.length) {
+          // 如果不是第一次上传，需要根据已有图片调整新图片的缩放
+          if (!isFirstUpload && images.value.length > 0) {
+            // 获取当前所有图片的平均尺寸
+            const avgSize = images.value.reduce((acc, img) => {
+              return acc + (img.width * img.scaleX + img.height * img.scaleY) / 2
+            }, 0) / images.value.length
+
+            // 对每个新图片进行缩放调整
+            newImages.forEach(newImg => {
+              const newSize = (newImg.width + newImg.height) / 2
+              // 如果新图片明显小于平均尺寸，适当放大
+              if (newSize < avgSize * 0.5) {
+                const scaleFactor = (avgSize * 0.7) / newSize
+                newImg.scaleX = scaleFactor
+                newImg.scaleY = scaleFactor
+              }
+            })
+          } else if (isFirstUpload && newImages.length > 1) {
+            // 如果是第一次上传多张图片，计算这批图片的平均尺寸
+            const avgSize = newImages.reduce((acc, img) => {
+              return acc + (img.width + img.height) / 2
+            }, 0) / newImages.length
+
+            // 对明显小于平均尺寸的图片进行缩放
+            newImages.forEach(img => {
+              const imgSize = (img.width + img.height) / 2
+              if (imgSize < avgSize * 0.5) {
+                const scaleFactor = (avgSize * 0.7) / imgSize
+                img.scaleX = scaleFactor
+                img.scaleY = scaleFactor
+              }
+            })
+          }
+
+          // 将所有新图片添加到数组中
+          images.value.push(...newImages)
+        }
       }
     }
     reader.readAsDataURL(file)
   })
+
   // 清空 input 以便重复上传同一文件
   e.target.value = ''
 }
 
-// 更新舞台大小以适应最底层图片
-const updateStageSizeToBaseImage = () => {
-  if (images.value.length > 0) {
-    const baseImg = images.value[0]
-    // 计算基准图片占据的实际物理宽度和高度（考虑缩放，暂不考虑旋转带来的复杂边界变化，以简化"以底层为准"的定义）
-    stageSize.value = {
-      width: baseImg.width * baseImg.scaleX,
-      height: baseImg.height * baseImg.scaleY,
-    }
-  }
-}
+// 智能调整视图以适应所有图片
+const fitToView = () => {
+  if (images.value.length === 0 || containerSize.value.width === 0) return
 
-// 自动缩放以适应屏幕
-const fitToScreen = () => {
-  if (!canvasAreaRef.value || images.value.length === 0) return
-
-  const containerWidth = canvasAreaRef.value.clientWidth
-  const containerHeight = canvasAreaRef.value.clientHeight
-
-  // 如果容器尺寸为0（可能未挂载好），稍后重试
-  if (containerWidth === 0 || containerHeight === 0) {
-    setTimeout(fitToScreen, 100)
-    return
-  }
-
-  // 找出所有图片中的最大尺寸
-  let maxWidth = 0
-  let maxHeight = 0
+  // 计算所有图片的边界框
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
 
   images.value.forEach(img => {
-    // 计算每个图片的实际占用尺寸（考虑位置和缩放）
-    const rightEdge = img.x + (img.width * img.scaleX)
-    const bottomEdge = img.y + (img.height * img.scaleY)
+    const width = img.width * img.scaleX
+    const height = img.height * img.scaleY
 
-    // 如果图片有负的x或y坐标，也要考虑进去
-    const leftEdge = Math.min(0, img.x)
-    const topEdge = Math.min(0, img.y)
+    // 考虑旋转的边界框
+    const rad = (img.rotation * Math.PI) / 180
+    const cos = Math.cos(rad)
+    const sin = Math.sin(rad)
 
-    const totalWidth = rightEdge - leftEdge
-    const totalHeight = bottomEdge - topEdge
+    const halfWidth = width / 2
+    const halfHeight = height / 2
 
-    maxWidth = Math.max(maxWidth, totalWidth)
-    maxHeight = Math.max(maxHeight, totalHeight)
+    const corners = [
+      { x: -halfWidth, y: -halfHeight },
+      { x: halfWidth, y: -halfHeight },
+      { x: halfWidth, y: halfHeight },
+      { x: -halfWidth, y: halfHeight }
+    ]
+
+    corners.forEach(corner => {
+      const rotatedX = corner.x * cos - corner.y * sin
+      const rotatedY = corner.x * sin + corner.y * cos
+      const finalX = img.x + halfWidth + rotatedX
+      const finalY = img.y + halfHeight + rotatedY
+
+      minX = Math.min(minX, finalX)
+      minY = Math.min(minY, finalY)
+      maxX = Math.max(maxX, finalX)
+      maxY = Math.max(maxY, finalY)
+    })
   })
 
-  const padding = 40 // 留一点边距
+  const boundingWidth = maxX - minX
+  const boundingHeight = maxY - minY
+  const centerX = (minX + maxX) / 2
+  const centerY = (minY + maxY) / 2
 
-  if (maxWidth === 0 || maxHeight === 0) return
+  const padding = 40
+  const containerW = containerSize.value.width
+  const containerH = containerSize.value.height
 
-  const scaleX = (containerWidth - padding) / maxWidth
-  const scaleY = (containerHeight - padding) / maxHeight
+  const scaleX = (containerW - padding) / boundingWidth
+  const scaleY = (containerH - padding) / boundingHeight
 
-  // 选择较小的缩放比，确保完全显示
-  let newZoom = Math.min(scaleX, scaleY)
-  // 限制缩放范围，避免过大或过小. 但如果图片非常小，允许放大一些以便编辑
-  newZoom = Math.min(Math.max(newZoom, 0.05), 10)
+  baseScale.value = Math.min(scaleX, scaleY, 1) // 不超过 100%
+  zoomLevel.value = 1
 
-  zoomLevel.value = newZoom
+  const finalScale = baseScale.value * zoomLevel.value
+  stagePos.value = {
+    x: containerW / 2 - centerX * finalScale,
+    y: containerH / 2 - centerY * finalScale
+  }
 }
 
 // 选中图片
@@ -156,8 +223,39 @@ const onSelect = (id) => {
   selectedId.value = id
 }
 
+// 滚轮缩放
+const handleWheel = (e) => {
+  const stage = stageRef.value.getStage()
+  if (!stage) return
+  e.evt.preventDefault()
+
+  const oldScale = baseScale.value * zoomLevel.value
+  const pointer = stage.getPointerPosition()
+
+  const scaleBy = 1.1
+  let newZoomLevel = e.evt.deltaY > 0 ? zoomLevel.value / scaleBy : zoomLevel.value * scaleBy
+
+  // 限制用户缩放等级在 5% 到 500% 之间 (相对于 baseScale)
+  newZoomLevel = Math.max(0.05, Math.min(newZoomLevel, 5))
+
+  zoomLevel.value = newZoomLevel
+  const newScale = baseScale.value * newZoomLevel
+
+  // 计算新的舞台位置，使缩放以鼠标为中心
+  const mousePointTo = {
+    x: (pointer.x - stage.x()) / oldScale,
+    y: (pointer.y - stage.y()) / oldScale,
+  }
+
+  stagePos.value = {
+    x: pointer.x - mousePointTo.x * newScale,
+    y: pointer.y - mousePointTo.y * newScale,
+  }
+}
+
 // 点击舞台空白处取消选中
 const onStageMouseDown = (e) => {
+  // 如果点击的是舞台本身，说明是点击了空白处
   if (e.target === e.target.getStage()) {
     selectedId.value = null
     return
@@ -222,24 +320,57 @@ const handleExport = async () => {
   const stage = stageRef.value.getStage()
   // 暂存当前状态
   const currentSelected = selectedId.value
-  const currentZoom = zoomLevel.value
 
-  // 取消选中（隐藏 Transformer），并重置缩放为 1:1 以便精确导出
+  // 取消选中（隐藏 Transformer），重置缩放和位置为原始状态以便精确导出
   selectedId.value = null
   zoomLevel.value = 1
+  baseScale.value = 1
+  stagePos.value = { x: 0, y: 0 }
 
-  // 等待 DOM 和 Konva 更新到 1:1 状态
+  // 等待 DOM 和 Konva 更新到原始状态
   await nextTick()
 
   try {
     const baseImg = images.value[0]
-    // 在 1:1 舞台状态下，使用 pixelRatio: 1 即可获得原始质量
+
+    // 计算底图的实际边界框（考虑旋转）
+    const rad = (baseImg.rotation * Math.PI) / 180
+    const cos = Math.cos(rad)
+    const sin = Math.sin(rad)
+
+    // 底图四个角的坐标（相对于底图中心）
+    const halfWidth = (baseImg.width * baseImg.scaleX) / 2
+    const halfHeight = (baseImg.height * baseImg.scaleY) / 2
+
+    const corners = [
+      { x: -halfWidth, y: -halfHeight },
+      { x: halfWidth, y: -halfHeight },
+      { x: halfWidth, y: halfHeight },
+      { x: -halfWidth, y: halfHeight }
+    ]
+
+    // 旋转后的角坐标
+    const rotatedCorners = corners.map(corner => ({
+      x: corner.x * cos - corner.y * sin,
+      y: corner.x * sin + corner.y * cos
+    }))
+
+    // 计算边界框
+    const minX = Math.min(...rotatedCorners.map(c => c.x)) + baseImg.x + halfWidth
+    const maxX = Math.max(...rotatedCorners.map(c => c.x)) + baseImg.x + halfWidth
+    const minY = Math.min(...rotatedCorners.map(c => c.y)) + baseImg.y + halfHeight
+    const maxY = Math.max(...rotatedCorners.map(c => c.y)) + baseImg.y + halfHeight
+
+    const exportWidth = maxX - minX
+    const exportHeight = maxY - minY
+
+    // 导出指定区域
     const dataURL = stage.toDataURL({
       pixelRatio: 1,
-      x: baseImg.x,
-      y: baseImg.y,
-      width: baseImg.width * baseImg.scaleX,
-      height: baseImg.height * baseImg.scaleY,
+      x: minX,
+      y: minY,
+      width: exportWidth,
+      height: exportHeight,
       mimeType: exportFormat.value,
       quality: exportQuality.value,
     })
@@ -255,22 +386,51 @@ const handleExport = async () => {
     console.error('Export failed:', e)
     alert('导出失败，请重试')
   } finally {
-    // 无论成功失败，都恢复之前的视图状态
+    // 恢复之前的视图状态
     selectedId.value = currentSelected
-    zoomLevel.value = currentZoom
+
+    // 重新计算视图以适应所有图片
+    fitToView()
   }
 }
 
 const rotationSnaps = [0, 90, 180, 270, 360]
 
+const zoomAroundCenter = (newZoomLevel) => {
+  const stage = stageRef.value?.getStage()
+  if (!stage) return
+
+  const oldScale = baseScale.value * zoomLevel.value
+  const newScale = baseScale.value * newZoomLevel
+
+  // 屏幕中心点
+  const cx = containerSize.value.width / 2
+  const cy = containerSize.value.height / 2
+
+  // 中心点在舞台上的相对坐标
+  const centerOnStage = {
+    x: (cx - stage.x()) / oldScale,
+    y: (cy - stage.y()) / oldScale,
+  }
+
+  // 新的舞台位置，保持屏幕中心点对应舞台上的同一点
+  stagePos.value = {
+    x: cx - centerOnStage.x * newScale,
+    y: cy - centerOnStage.y * newScale,
+  }
+  zoomLevel.value = newZoomLevel
+}
+
 const zoomIn = () => {
-  zoomLevel.value = Math.min(5, zoomLevel.value + 0.1)
+  const newZoom = Math.min(5, zoomLevel.value * 1.2)
+  zoomAroundCenter(newZoom)
 }
 const zoomOut = () => {
-  zoomLevel.value = Math.max(0.1, zoomLevel.value - 0.1)
+  const newZoom = Math.max(0.05, zoomLevel.value / 1.2)
+  zoomAroundCenter(newZoom)
 }
 const resetZoom = () => {
-  zoomLevel.value = 1
+  fitToView()
 }
 
 const zoomPercentage = computed(() => Math.round(zoomLevel.value * 100) + '%')
@@ -423,23 +583,26 @@ const toggleMobileLayers = () => {
     ></div>
 
     <div class="canvas-area" ref="canvasAreaRef">
-      <div
-        class="stage-wrapper"
-        :style="{
-          width: stageSize.width * zoomLevel + 'px',
-          height: stageSize.height * zoomLevel + 'px',
+      <v-stage
+        ref="stageRef"
+        :config="{
+          width: containerSize.width,
+          height: containerSize.height,
+          scale: { x: baseScale * zoomLevel, y: baseScale * zoomLevel },
+          x: stagePos.x,
+          y: stagePos.y,
+          draggable: true,
+        }"
+        @mousedown="onStageMouseDown"
+        @touchstart="onStageMouseDown"
+        @wheel="handleWheel"
+        @dragend="(e) => {
+          // 如果是舞台本身的拖动结束，更新位置
+          if (e.target === e.target.getStage()) {
+             stagePos.value = { x: e.target.x(), y: e.target.y() }
+          }
         }"
       >
-        <v-stage
-          ref="stageRef"
-          :config="{
-            width: stageSize.width * zoomLevel,
-            height: stageSize.height * zoomLevel,
-            scale: { x: zoomLevel, y: zoomLevel },
-          }"
-          @mousedown="onStageMouseDown"
-          @touchstart="onStageMouseDown"
-        >
           <v-layer>
             <v-image
               v-for="item in images"
@@ -476,7 +639,6 @@ const toggleMobileLayers = () => {
             />
           </v-layer>
         </v-stage>
-      </div>
       <div v-if="images.length === 0" class="placeholder">
         <p>点击"上传图片"开始</p>
       </div>
@@ -554,12 +716,9 @@ const toggleMobileLayers = () => {
 .canvas-area {
   flex: 1;
   background: #e9ecef;
-  display: flex;
-  /* justify-content: center;  Removed to fix clipping when scrolling */
-  /* align-items: center;      Removed to fix clipping when scrolling */
   position: relative;
-  overflow: auto;
-  touch-action: none; /* 禁止移动端默认手势 */
+  overflow: hidden; /* 隐藏滚动条，使用无限画布平移 */
+  touch-action: none;
   background-image:
     linear-gradient(45deg, #e0e0e0 25%, transparent 25%),
     linear-gradient(-45deg, #e0e0e0 25%, transparent 25%),
@@ -573,16 +732,11 @@ const toggleMobileLayers = () => {
     -10px 0px;
 }
 
-.stage-wrapper {
-  box-shadow: 0 0 30px rgba(0, 0, 0, 0.2);
-  background: white;
-  transition: all 0.3s ease;
-  margin: auto; /* Center when smaller than container, allow scroll when larger */
-  flex-shrink: 0;
-}
-
 .placeholder {
   position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
   color: #999;
   font-size: 24px;
   pointer-events: none;
