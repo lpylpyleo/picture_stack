@@ -1,0 +1,26 @@
+# robots.txt for Picture Stack
+# https://picture-stack.pages.dev/
+
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /admin/
+
+# Sitemap
+Sitemap: https://picture-stack.pages.dev/sitemap.xml
+
+# Crawl-delay
+Crawl-delay: 1
+
+# Popular search engines
+User-agent: Googlebot
+Allow: /
+
+User-agent: Bingbot
+Allow: /
+
+User-agent: Baiduspider
+Allow: /
+
+User-agent: Sogou
+Allow: /

@@ -42,10 +42,10 @@
         class="btn btn-info"
         @click="$emit('preview')"
         :disabled="!hasImages"
-        title="在新页面查看"
+        title="在新页面预览"
       >
         <span class="icon">👁️</span>
-        <span class="text">查看</span>
+        <span class="text">预览</span>
       </button>
     </div>
   </div>
